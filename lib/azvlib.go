@@ -1,3 +1,11 @@
+// Copyright (c) 2025 Joshua Lee https://github.com/j358
+// See LICENSE file for details.
+
+// This library implements an Azure Key Vault signer that conforms to the crypto.Signer interface
+// It allows signing operations using keys stored in Azure Key Vault
+// The library also provides functions to retrieve certificates associated with the keys
+// The additional functionality is used by the top level package to provide a PKCS#11 interface
+
 package lib
 
 import (
@@ -52,7 +60,6 @@ type AzvSigner struct {
 	AzKeysClient  *azkeys.Client
 	AzCertsClient *azcertificates.Client
 	params        azkeys.SignParameters
-	ctx           *context.Context
 	KeyList       []keyMap
 	CertList      []certMap
 	KeyCert       azcertificates.Certificate
@@ -62,6 +69,8 @@ type AzvSigner struct {
 	KeyIndex  int
 }
 
+// Manually set the client secret credentials instead of taking the values from environment variables
+// Call this function before CreateSigner
 func (cs *AzvSigner) SetClientSecretCreds(tenantId, clientId, clientSecret string) error {
 	if tenantId == "" || clientId == "" || clientSecret == "" {
 		return errors.New("tenantId, clientId, and clientSecret must be provided")
@@ -72,9 +81,10 @@ func (cs *AzvSigner) SetClientSecretCreds(tenantId, clientId, clientSecret strin
 	return nil
 }
 
+// Create a signer using the specified Azure Key Vault
+// This function connects to the vault, lists keys and certificates, and prepares for signing operations
+// It is generally followed by a setKey call to select a specific key for signing operations
 func (cs *AzvSigner) CreateSigner(vault string) error {
-	ctx := context.TODO()
-	cs.ctx = &ctx
 
 	cs.VaultName = vault
 	if cs.VaultName == "" {
@@ -112,7 +122,7 @@ func (cs *AzvSigner) CreateSigner(vault string) error {
 		}
 	}
 
-	// Also attempt device code
+	// Also attempt device code - not very good as the object does not stay logged in
 	if authOk == false {
 		credCode, err := azidentity.NewDeviceCodeCredential(nil)
 		if err != nil {
@@ -141,7 +151,7 @@ func (cs *AzvSigner) CreateSigner(vault string) error {
 	}
 	keysPager := cs.AzKeysClient.NewListKeyPropertiesPager(nil)
 	for keysPager.More() {
-		page, err := keysPager.NextPage(*cs.ctx)
+		page, err := keysPager.NextPage(context.TODO())
 		if err != nil {
 			println("Failed to list keys: " + err.Error())
 			return err
@@ -177,7 +187,7 @@ func (cs *AzvSigner) CreateSigner(vault string) error {
 	}
 	certsPager := cs.AzCertsClient.NewListCertificatePropertiesPager(nil)
 	for certsPager.More() {
-		page, err := certsPager.NextPage(*cs.ctx)
+		page, err := certsPager.NextPage(context.TODO())
 		if err != nil {
 			println("Failed to list certificates: " + err.Error())
 			return err
@@ -205,6 +215,7 @@ func (cs *AzvSigner) CreateSigner(vault string) error {
 	return nil
 }
 
+// DestroySigner cleans up the AzvSigner by setting clients to nil and emptying parameters
 func (cs *AzvSigner) DestroySigner() {
 	if cs.AzKeysClient != nil {
 		println("Destroying Azure Key Vault client")
@@ -220,15 +231,15 @@ func (cs *AzvSigner) DestroySigner() {
 	}
 	cs.PublicKey = nil
 	cs.params = azkeys.SignParameters{}
-	cs.ctx = nil
 }
 
+// crypto.Signer interface implementation for Public Key
 func (cs *AzvSigner) Public() crypto.PublicKey {
 	//println("Public Key: ", cs.publicKey.Size(), " bytes")
 	return cs.PublicKey
 }
 
-// crypto.Signer interface implementation
+// crypto.Signer interface implementation for Sign
 func (cs *AzvSigner) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
 	if cs.AzKeysClient == nil {
 		return nil, errors.New("Azure Key Vault client is not initialized")
@@ -246,7 +257,7 @@ func (cs *AzvSigner) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts)
 	}
 
 	// Sign the digest
-	signature, err := cs.AzKeysClient.Sign(*cs.ctx, cs.KeyName, "", cs.params, nil)
+	signature, err := cs.AzKeysClient.Sign(context.TODO(), cs.KeyName, "", cs.params, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign digest: %w", err)
 	}
@@ -254,6 +265,7 @@ func (cs *AzvSigner) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts)
 	return signature.Result, nil
 }
 
+// PkcsSign is not currently supported
 func (cs *AzvSigner) PkcsSign(data []byte, signType string) ([]byte, error) {
 	if cs.AzKeysClient == nil {
 		return nil, errors.New("Azure Key Vault client is not initialized")
@@ -283,6 +295,8 @@ func (cs *AzvSigner) PkcsSign(data []byte, signType string) ([]byte, error) {
 	*/
 }
 
+// DigestAndSign computes the SHA256 digest of the input data and signs it using the specified sign type
+// Currently, only SHA256 digest and RSA sign types are supported
 func (cs *AzvSigner) DigestAndSign(data []byte, digestType string, signType string) (signature []byte, err error) {
 	if digestType != "SHA256" {
 		return nil, errors.New("unsupported digest type: " + signType)
@@ -309,6 +323,8 @@ func (cs *AzvSigner) DigestAndSign(data []byte, digestType string, signType stri
 	return sig, nil
 }
 
+// CheckSigner verifies that the provided signer implements the crypto.Signer interface
+// and checks the type of the public key
 func CheckSigner(signer any) {
 	s, ok := signer.(crypto.Signer)
 	if !ok {
@@ -333,6 +349,9 @@ func CheckSigner(signer any) {
 	}
 }
 
+// SetKey selects a key from Azure Key Vault by name and retrieves its public key
+// If the key name is empty, it defaults to a predefined local test certificate name
+// The public key is extracted and prepared for signing operations
 func (cs *AzvSigner) SetKey(keyName string) error {
 	if cs.AzKeysClient == nil {
 		return errors.New("Azure Key Vault client is not initialized")
@@ -346,7 +365,7 @@ func (cs *AzvSigner) SetKey(keyName string) error {
 	}
 
 	// Get the public key from Azure Key Vault
-	key, err := cs.AzKeysClient.GetKey(*cs.ctx, cs.KeyName, "", nil)
+	key, err := cs.AzKeysClient.GetKey(context.TODO(), cs.KeyName, "", nil)
 	if err != nil {
 		println("Failed to get key from Azure Key Vault: " + err.Error())
 		return err
@@ -385,6 +404,7 @@ func (cs *AzvSigner) SetKey(keyName string) error {
 	return nil
 }
 
+// GetCertForKey retrieves the certificate associated with the specified key from Azure Key Vault
 func (cs *AzvSigner) GetCertForKey() error {
 	if cs.AzCertsClient == nil {
 		return errors.New("Azure Key Vault certificate client is not initialized")
@@ -398,7 +418,7 @@ func (cs *AzvSigner) GetCertForKey() error {
 		return nil
 	}
 
-	cert, err := cs.AzCertsClient.GetCertificate(*cs.ctx, cs.KeyName, "", nil)
+	cert, err := cs.AzCertsClient.GetCertificate(context.TODO(), cs.KeyName, "", nil)
 	if err != nil {
 		return errors.New("Failed to get certificate from Azure Key Vault: " + err.Error())
 	}
@@ -408,6 +428,7 @@ func (cs *AzvSigner) GetCertForKey() error {
 	return nil
 }
 
+// GetCertBytes retrieves the certificate bytes in DER format
 func (cs *AzvSigner) GetCertBytes() ([]byte, error) {
 	if cs.KeyName == LOCAL_TEST_CERT_NAME {
 		// Read in the cert data in PEM format

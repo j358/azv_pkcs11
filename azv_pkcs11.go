@@ -1,6 +1,11 @@
-package main
+// Copyright (c) 2025 Joshua Lee https://github.com/j358
+// See LICENSE file for details.
 
+// This file contains the C bindings for the azv_pkcs11 library
 // Build with go build -buildmode=c-archive -o libazv.a
+// Additional logging can be activated by setting the AZV_LOG_MODE environment variable to 1 (console) or 2 (file)
+
+package main
 
 // #include <stdio.h>
 // #include <errno.h>
@@ -27,6 +32,10 @@ var ret unsafe.Pointer
 var doFree = false
 
 /*
+ASN.1 structure for EncryptedPrivateKeyInfo
+Used for decoding the input to AzvSign_RSA_PKCS when it is not a raw hash
+The structure is defined in PKCS#8 (RFC 5208)
+
 EncryptedPrivateKeyInfo SEQUENCE (2 elem)
     encryptionAlgorithm AlgorithmIdentifier SEQUENCE (2 elem)
         algorithm OBJECT IDENTIFIER 2.16.840.1.101.3.4.2.1 sha-256 (NIST Algorithm)
@@ -43,6 +52,7 @@ type AlgorithmIdentifier struct {
 	PARAMETERS asn1.RawValue // should be NULL
 }
 
+// Normally this file is built as a library, but if run directly it can perform tests
 func main() {
 	if len(os.Args) > 1 {
 		if os.Args[1] == "test" {
@@ -51,6 +61,8 @@ func main() {
 	}
 }
 
+// AzvInit initializes the azvlib package and creates the Azure Key Vault signer
+//
 //export AzvInit
 func AzvInit() int {
 	println("Initializing azvlib package")
@@ -66,6 +78,12 @@ func AzvInit() int {
 	return 0
 }
 
+// AzvCancel cleans up the azvlib package and frees resources
+// A non-deterministic sequence of module closing can cause segmentation faults
+// e.g. if using openssl engine interface, libp11 0.4.16, and azv_pkcs11 together
+// one workaround was to stop libp11 from closing the loaded module early with a patch:
+// sed -i 's/dlclose(mod->handle);/return CKR_OK; dlclose(mod->handle);/' /usr/src/libp11-0.4.16/src/libpkcs11.c
+//
 //export AzvCancel
 func AzvCancel() {
 	println("Cancelling azvlib package")
@@ -73,6 +91,9 @@ func AzvCancel() {
 	signer.DestroySigner()
 }
 
+// freeReturn frees the memory allocated for the return value if needed
+// Any functions that allocate memory for return values set doFree to true
+// and store the pointer in ret.
 func freeReturn() {
 	if doFree {
 		if ret != nil {
@@ -83,6 +104,10 @@ func freeReturn() {
 	}
 }
 
+// setReturnChar sets the return value to a C string and manages memory
+// It frees any previously allocated return value before setting the new one
+// It sets doFree to true to indicate that the memory should be freed later
+// It returns the C string pointer
 func setReturnChar(cs *C.char) *C.char {
 	freeReturn()
 	ret = unsafe.Pointer(cs)
@@ -90,6 +115,10 @@ func setReturnChar(cs *C.char) *C.char {
 	return cs
 }
 
+// setReturnByte sets the return value to a byte array and manages memory
+// It frees any previously allocated return value before setting the new one
+// It sets doFree to true to indicate that the memory should be freed later
+// It returns the byte array pointer
 func setReturnByte(cs unsafe.Pointer) unsafe.Pointer {
 	freeReturn()
 	ret = cs
@@ -97,11 +126,16 @@ func setReturnByte(cs unsafe.Pointer) unsafe.Pointer {
 	return ret
 }
 
+// AzvGetVaultKeyCount returns the number of keys available in the vault
+//
 //export AzvGetVaultKeyCount
 func AzvGetVaultKeyCount() int {
 	return len(signer.KeyList)
 }
 
+// AzvGetKeyListName returns the name of the key at the given index
+// Returns NULL if the index is out of range
+//
 //export AzvGetKeyListName
 func AzvGetKeyListName(index int) *C.char {
 	if index < 0 || index >= len(signer.KeyList) {
@@ -113,6 +147,9 @@ func AzvGetKeyListName(index int) *C.char {
 	return setReturnChar(C.CString(keyName))
 }
 
+// AzvSetKeyIndex sets the current key to the key at the given index
+// Returns 0 on success, or a negative error code on failure
+//
 //export AzvSetKeyIndex
 func AzvSetKeyIndex(index int) int {
 	if index < 0 || index >= len(signer.KeyList) {
@@ -130,6 +167,9 @@ func AzvSetKeyIndex(index int) int {
 	return 0
 }
 
+// AzvGetKeyIndex returns the current key index
+// Returns -5 if the index is out of range
+//
 //export AzvGetKeyIndex
 func AzvGetKeyIndex() int {
 	if signer.KeyIndex < 0 || signer.KeyIndex >= len(signer.KeyList) {
@@ -139,18 +179,26 @@ func AzvGetKeyIndex() int {
 	return signer.KeyIndex
 }
 
+// AzvGetVaultName returns the name of the vault configured when the signer was created
+//
 //export AzvGetVaultName
 func AzvGetVaultName() *C.char {
 	// This function can be used to retrieve the vault name if needed
 	return setReturnChar(C.CString(signer.VaultName))
 }
 
+// AzvGetKeyName returns the name of the current key
+//
 //export AzvGetKeyName
 func AzvGetKeyName() *C.char {
 	// This function can be used to retrieve the key name if needed
 	return setReturnChar(C.CString(signer.KeyName))
 }
 
+// AzvSign_RSA_PKCS signs the given data using the current key and returns the signature
+// The data can be either a raw hash (32 or 64 bytes) or an ASN.1 encoded EncryptedPrivateKeyInfo structure
+// If the data is not a raw hash, it is ASN.1 decoded to extract the encrypted data
+//
 //export AzvSign_RSA_PKCS
 func AzvSign_RSA_PKCS(data *byte, dataLen C.size_t, sigLen *C.size_t) unsafe.Pointer {
 	if signer.AzKeysClient == nil {
@@ -196,6 +244,9 @@ func AzvSign_RSA_PKCS(data *byte, dataLen C.size_t, sigLen *C.size_t) unsafe.Poi
 	return setReturnByte(C.CBytes(signature))
 }
 
+// AzvSign_SHA256_RSA_PKCS computes the SHA256 digest of the given data and signs it using the current key
+// The data is expected to be the raw data to be hashed and signed
+//
 //export AzvSign_SHA256_RSA_PKCS
 func AzvSign_SHA256_RSA_PKCS(data *byte, dataLen C.size_t, sigLen *C.size_t) unsafe.Pointer {
 	if signer.AzKeysClient == nil {
@@ -214,6 +265,8 @@ func AzvSign_SHA256_RSA_PKCS(data *byte, dataLen C.size_t, sigLen *C.size_t) uns
 	return setReturnByte(C.CBytes(signature))
 }
 
+// AzvGetKeyExponent returns the public key exponent of the current key
+//
 //export AzvGetKeyExponent
 func AzvGetKeyExponent() unsafe.Pointer {
 	if signer.AzKeysClient == nil {
@@ -235,6 +288,8 @@ func AzvGetKeyExponent() unsafe.Pointer {
 	return setReturnByte(C.CBytes(exponent))
 }
 
+// AzvGetKeyModulusLen returns the length of the public key modulus in bytes
+//
 //export AzvGetKeyModulusLen
 func AzvGetKeyModulusLen() C.size_t {
 	if signer.AzKeysClient == nil {
@@ -255,6 +310,8 @@ func AzvGetKeyModulusLen() C.size_t {
 	return modulusLen
 }
 
+// AzvGetKeyModulus returns the public key modulus of the current key
+//
 //export AzvGetKeyModulus
 func AzvGetKeyModulus() unsafe.Pointer {
 	if signer.AzKeysClient == nil {
@@ -279,6 +336,9 @@ func AzvGetKeyModulus() unsafe.Pointer {
 	return setReturnByte(C.CBytes(modulus))
 }
 
+// AzvLoadCert retrieves the certificate associated with the current key from Azure Key Vault
+// The certificate is stored in the signer for later retrieval
+//
 //export AzvLoadCert
 func AzvLoadCert() int {
 	err := signer.GetCertForKey()
@@ -292,6 +352,8 @@ func AzvLoadCert() int {
 	return 0
 }
 
+// AzvGetCertLen returns the length of the certificate in bytes
+//
 //export AzvGetCertLen
 func AzvGetCertLen() C.size_t {
 	b, err := signer.GetCertBytes()
@@ -309,6 +371,8 @@ func AzvGetCertLen() C.size_t {
 	return C.size_t(len(b))
 }
 
+// AzvGetCert returns the certificate in DER format as a byte array
+//
 //export AzvGetCert
 func AzvGetCert() unsafe.Pointer {
 	certBytes, err := signer.GetCertBytes()
@@ -328,23 +392,31 @@ func AzvGetCert() unsafe.Pointer {
 	return setReturnByte(C.CBytes(certBytes))
 }
 
+// AzvGetCertIdLen returns the length of the certificate thumbprint in bytes
+//
 //export AzvGetCertIdLen
 func AzvGetCertIdLen() C.size_t {
 	return C.size_t(len(signer.KeyCert.X509Thumbprint))
 }
 
+// AzvGetCertId returns the certificate thumbprint
+//
 //export AzvGetCertId
 func AzvGetCertId() unsafe.Pointer {
 	return setReturnByte(C.CBytes(signer.KeyCert.X509Thumbprint))
 }
 
+// AzvGetUTC returns the current UTC time as a string in RFC3339 format
+//
 //export AzvGetUTC
 func AzvGetUTC() *C.char {
-	// This function can be used to retrieve the current UTC time
 	utcTime := time.Now().UTC().Format(time.RFC3339)
 	return setReturnChar(C.CString(utcTime))
 }
 
+// AzvLog is a logging function that can be called from C code
+// It logs messages to the console or a file based on the AZV_LOG_MODE environment variable
+//
 //export AzvLog
 func AzvLog(msg *C.char) {
 	// This function can be used to log messages from C code
