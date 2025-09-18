@@ -1,0 +1,8 @@
+*.pyc
+*.exe
+*.dll
+*.so
+*.o
+*.a
+.vscode*
+lib/azvsecrets.go
