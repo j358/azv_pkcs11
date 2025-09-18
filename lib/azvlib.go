@@ -24,10 +24,10 @@ var LOCAL_TEST_CERT_FILE = "ca_cert.pem"
 var LOCAL_TEST_CERT_NAME = "TestCert"
 var LOCAL_TEST_VAULT_NAME = "MyTestVault"
 
-// These should be set in azvsecrets.go which is set to git ignore
-// var AZ_SECRET, _ = os.LookupEnv("AZV_CLIENT_SECRET")
-// var AZ_TENANT_ID = ""
-// var AZ_CLIENT_ID = ""
+// Set client secret credentials here via environment variables
+var AZ_SECRET, _ = os.LookupEnv("AZV_CLIENT_SECRET")
+var AZ_TENANT_ID, _ = os.LookupEnv("AZ_TENANT_ID")
+var AZ_CLIENT_ID, _ = os.LookupEnv("AZ_CLIENT_ID")
 
 var logMode, _ = os.LookupEnv("AZV_LOG_MODE")
 
@@ -60,6 +60,16 @@ type AzvSigner struct {
 	VaultName string
 	KeyName   string
 	KeyIndex  int
+}
+
+func (cs *AzvSigner) SetClientSecretCreds(tenantId, clientId, clientSecret string) error {
+	if tenantId == "" || clientId == "" || clientSecret == "" {
+		return errors.New("tenantId, clientId, and clientSecret must be provided")
+	}
+	AZ_TENANT_ID = tenantId
+	AZ_CLIENT_ID = clientId
+	AZ_SECRET = clientSecret
+	return nil
 }
 
 func (cs *AzvSigner) CreateSigner(vault string) error {
