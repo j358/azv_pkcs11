@@ -33,7 +33,7 @@ var LOCAL_TEST_CERT_NAME = "TestCert"
 var LOCAL_TEST_VAULT_NAME = "MyTestVault"
 
 // Set client secret credentials here via environment variables
-var AZ_SECRET, _ = os.LookupEnv("AZV_CLIENT_SECRET")
+var AZ_SECRET, _ = os.LookupEnv("AZ_CLIENT_SECRET")
 var AZ_TENANT_ID, _ = os.LookupEnv("AZ_TENANT_ID")
 var AZ_CLIENT_ID, _ = os.LookupEnv("AZ_CLIENT_ID")
 
@@ -72,12 +72,15 @@ type AzvSigner struct {
 // Manually set the client secret credentials instead of taking the values from environment variables
 // Call this function before CreateSigner
 func (cs *AzvSigner) SetClientSecretCreds(tenantId, clientId, clientSecret string) error {
-	if tenantId == "" || clientId == "" || clientSecret == "" {
-		return errors.New("tenantId, clientId, and clientSecret must be provided")
+	if tenantId == "" || clientId == "" {
+		return errors.New("tenantId and clientId must be provided")
 	}
 	AZ_TENANT_ID = tenantId
 	AZ_CLIENT_ID = clientId
-	AZ_SECRET = clientSecret
+	// Client secret can be empty for managed identity, will be taken from environment variable if not provided here
+	if clientSecret != "" {
+		AZ_SECRET = clientSecret
+	}
 	return nil
 }
 

@@ -69,6 +69,11 @@ func AzvInit() int {
 
 	doFree = false
 
+	if config.DefaultAzTenantId != "" {
+		println("Using stored credentials")
+		signer.SetClientSecretCreds(config.DefaultAzTenantId, config.DefaultAzClientId, config.DefaultAzClientSecret)
+	}
+
 	err := signer.CreateSigner(config.KeyVaultName)
 	if err != nil {
 		println("Failed to create signer: " + err.Error())

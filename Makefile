@@ -12,6 +12,8 @@ qa: config-qa all
 
 series: config-series all
 
+custom: config-custom all
+
 all: azv-pkcs11.o libazv.a
 	$(CC) $(ARCH_FLAGS) -shared -o $(LIBNAME) \
 	-Wl,-soname,$(LIBNAME) \
@@ -33,6 +35,16 @@ config-qa:
 config-series:
 	echo package config > config/keyvault.go
 	echo var KeyVaultName = \"MyTestVault\" >> config/keyvault.go
+
+config-custom:
+	echo package config > config/keyvault.go
+	echo var KeyVaultName = \"$(AZV_KEYVAULT)\" >> config/keyvault.go
+	@if [ -n "$(AZ_TENANT_ID)" ]; then \
+		echo package config > config/clientsecret.go; \
+		echo var DefaultAzTenantId = \"$(AZ_TENANT_ID)\" >> config/clientsecret.go; \
+		echo var DefaultAzClientId = \"$(AZ_CLIENT_ID)\" >> config/clientsecret.go; \
+		echo var DefaultAzClientSecret = \"$(AZ_CLIENT_SECRET)\" >> config/clientsecret.go; \
+	fi
 
 clean:
 	-rm -f *.o
