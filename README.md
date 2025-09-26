@@ -45,3 +45,9 @@ The Go application is compiled to a shared C library (libazv) for inclusion in t
     openssl pkeyutl -verify -in testdata.txt -rawin -digest SHA-256 -inkey "pkcs11:token=T-MyTestCertificate;type=private" -sigfile sigout2.bin
 
     openssl x509 -in "pkcs11:token=T-MyTestCertificate;type=private" -text
+
+    openssl sha256 -out test.hash -binary test/testdata.txt
+    openssl pkeyutl -sign -in test.hash -inkey "pkcs11:token=T-MyTestCertificate;type=private" -out sigout2.bin  -provider pkcs11prov
+
+    mkimage -N pkcs11 -k "token=T-MyTestCertificate" -f manifest.its -K pubkey.dtb -r bundle/fitImage.img
+    rauc bundle --signing-keyring=MyTestCA.crt --cert=MyTestCertificate.pem --key="pkcs11:token=T-MyTestCertificate" --keyring=MyTestCA.crt bundle/ test.raucb

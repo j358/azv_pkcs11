@@ -26,6 +26,7 @@
 
 #define ID_OFFSET 10000
 #define SERIAL_OFFSET 20000
+#define KEY_OFFSET 30000
 #define SESSION_ID 12345
 #define MY_PRIVATE_KEY_HANDLE 54321
 #define MY_PUBLIC_KEY_HANDLE 65432
@@ -364,9 +365,12 @@ CK_DEFINE_FUNCTION(CK_RV, C_GetTokenInfo)(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR p
 	// get only first 29 characters
 
 	sprintf((char * restrict)pInfo->label, "T-%s", AzvGetKeyListName(index));
-	sprintf((char * restrict)pInfo->manufacturerID,"%s ", AzvGetVaultName());
+	sprintf((char * restrict)pInfo->manufacturerID,"%s", AzvGetVaultName());
 	sprintf((char * restrict)pInfo->model, "libazv");
 	sprintf((char * restrict)pInfo->serialNumber, "%05x", (unsigned int)slotID);
+
+	snprintf(cntString, sizeof(cntString), "pInfo->label: '%s'", pInfo->label);
+	AzvLog(cntString);
 
 	pInfo->flags = CKF_TOKEN_INITIALIZED | CKF_CLOCK_ON_TOKEN;
 	pInfo->ulMaxSessionCount = 100;
@@ -675,11 +679,13 @@ CK_DEFINE_FUNCTION(CK_RV, C_GetAttributeValue)(CK_SESSION_HANDLE hSession, CK_OB
 	}
 
 	char cntString[128];
-	snprintf(cntString, sizeof(cntString), "C_GetAttributeValue called with count: 0x%lu, session: %lu, handle %lu, attr: %04lx", ulCount, hSession, hObject, pTemplate->type);
+	snprintf(cntString, sizeof(cntString), "C_GetAttributeValue called with count: 0x%lu, session: %lu, handle %lu, attr: %04lx, len: %lu", ulCount, hSession, hObject, pTemplate->type, pTemplate->ulValueLen);
 	AzvLog(cntString);
 
+	CK_ULONG inLen = pTemplate->ulValueLen;
+
 	// CK_ULONG length objects
-	if (sizeof(CK_ULONG) == pTemplate->ulValueLen) {
+	if (sizeof(CK_ULONG) == inLen) {
 		switch(pTemplate->type) {
 			case CKA_CLASS:
 			switch (hObject) {
@@ -706,7 +712,7 @@ CK_DEFINE_FUNCTION(CK_RV, C_GetAttributeValue)(CK_SESSION_HANDLE hSession, CK_OB
 				pTemplate->ulValueLen = sizeof(CK_KEY_TYPE);
 				break;
 			case CKA_ID:
-				AzvLog("C_GetAttributeValue type: CKA_ID");
+				AzvLog("C_GetAttributeValue CK_ULONG type: CKA_ID");
 				pTemplate->ulValueLen = 0;
 				break;
 			case CKA_MODULUS_BITS:
@@ -724,14 +730,14 @@ CK_DEFINE_FUNCTION(CK_RV, C_GetAttributeValue)(CK_SESSION_HANDLE hSession, CK_OB
 				pTemplate->ulValueLen = sizeof(CK_ULONG);
 				break;
 			default:
-				AzvLog("C_GetAttributeValue unknown type");
+				AzvLog("C_GetAttributeValue CK_ULONG unknown type");
 				printf("%lx\n", pTemplate->type);
 				break;
 		}
 	}
 
 	// CK_BBOOL length objects
-	if (sizeof(CK_BBOOL) == pTemplate->ulValueLen) {
+	if (sizeof(CK_BBOOL) == inLen) {
 		switch(pTemplate->type) {
 			case CKA_SENSITIVE:
 				AzvLog("C_GetAttributeValue type: CKA_SENSITIVE = CK_TRUE");
@@ -758,8 +764,13 @@ CK_DEFINE_FUNCTION(CK_RV, C_GetAttributeValue)(CK_SESSION_HANDLE hSession, CK_OB
 				*((CK_OBJECT_CLASS*)pTemplate->pValue) = CK_TRUE;
 				pTemplate->ulValueLen = sizeof(CK_BBOOL);
 				break;
+			case CKR_KEY_NOT_NEEDED:
+				AzvLog("C_GetAttributeValue type: CKR_KEY_NOT_NEEDED = CK_TRUE");
+				*((CK_OBJECT_CLASS*)pTemplate->pValue) = CK_TRUE;
+				pTemplate->ulValueLen = sizeof(CK_BBOOL);
+				break;
 			default:
-				AzvLog("C_GetAttributeValue unknown type");
+				AzvLog("C_GetAttributeValue CK_BBOOL unknown type");
 				printf("%lx\n", pTemplate->type);
 				break;
 		}
@@ -767,157 +778,202 @@ CK_DEFINE_FUNCTION(CK_RV, C_GetAttributeValue)(CK_SESSION_HANDLE hSession, CK_OB
 	
 	// Other length objects
 
-	CK_ULONG byteLen;
-	switch(pTemplate->type) {
-		case CKA_PUBLIC_EXPONENT:
-			AzvLog("C_GetAttributeValue type: CKA_PUBLIC_EXPONENT");
-			byteLen = (CK_ULONG)(32 / 8); // 4 bytes
-			if (pTemplate->pValue == NULL_PTR) {
-				AzvLog("C_GetAttributeValue pValue is NULL");
-				pTemplate->ulValueLen = byteLen;
-				return CKR_OK;
-			}
-			if (pTemplate->ulValueLen < byteLen) {
-				AzvLog("C_GetAttributeValue CKA_PUBLIC_EXPONENT length is too small");
-				return CKR_BUFFER_TOO_SMALL;
-			}
-			CK_BYTE_PTR expData = (CK_BYTE_PTR)AzvGetKeyExponent();
-			if (expData == NULL_PTR) {
-				AzvLog("C_GetAttributeValue CKA_PUBLIC_EXPONENT data is NULL");
-				return CKR_FUNCTION_FAILED;
-			}
-			//memcpy(pTemplate->pValue, expData, pTemplate->ulValueLen);
-			for (int i = 0; i < (int)byteLen; i++) {
-				((CK_BYTE*)pTemplate->pValue)[i] = expData[i];
-				//printf("%02x:", ((CK_BYTE*)pTemplate->pValue)[i]);
-			}
-			//printf("\n");
-			break;
-		case CKA_MODULUS:
-			AzvLog("C_GetAttributeValue type: CKA_MODULUS");
-			byteLen = (CK_ULONG)AzvGetKeyModulusLen();
-			if (pTemplate->pValue == NULL_PTR) {
-				AzvLog("C_GetAttributeValue pValue is NULL");
-				pTemplate->ulValueLen = byteLen;
-				return CKR_OK;
-			}
-			if (pTemplate->ulValueLen < byteLen) {
-				AzvLog("C_GetAttributeValue CKA_MODULUS length is too small");
-				pTemplate->ulValueLen = byteLen;
-				return CKR_BUFFER_TOO_SMALL;
-			}
-			CK_BYTE_PTR modData = (CK_BYTE_PTR)AzvGetKeyModulus();
-			if (modData == NULL_PTR) {
-				AzvLog("C_GetAttributeValue CKA_MODULUS data is NULL");
-				return CKR_FUNCTION_FAILED;
-			}
-			//memcpy(pTemplate->pValue, modData, pTemplate->ulValueLen);
-			for (int i = 0; i < (int)byteLen; i++) {
-				((CK_BYTE*)pTemplate->pValue)[i] = modData[i];
-				//printf("%02x:", ((CK_BYTE*)pTemplate->pValue)[i]);
-			}
-			//printf("\n");
-			break;
-		case CKA_LABEL:
-			AzvLog("C_GetAttributeValue type: CKA_LABEL");
-			char *keyName = AzvGetKeyName();
-			byteLen = strlen(keyName)+4;
-			if (pTemplate->pValue == NULL_PTR) {
-				AzvLog("C_GetAttributeValue pValue is NULL");
-				pTemplate->ulValueLen = byteLen;
-				return CKR_OK;
-			}
-			if (pTemplate->ulValueLen < byteLen) {
-				AzvLog("C_GetAttributeValue CKA_LABEL length is too small");
-				pTemplate->ulValueLen = byteLen;
-				return CKR_BUFFER_TOO_SMALL;
-			}
-			//memcpy(pTemplate->pValue, modData, pTemplate->ulValueLen);
-			for (int i = 0; i < (int)byteLen-4; i++) {
-				((CK_BYTE*)pTemplate->pValue)[i] = keyName[i];
-				//printf("%02x:", ((CK_BYTE*)pTemplate->pValue)[i]);
-			}
-			((CK_BYTE*)pTemplate->pValue)[byteLen-5] = '-';
-			if (hObject == MY_CERTIFICATE_HANDLE) {
-				((CK_BYTE*)pTemplate->pValue)[byteLen-4] = 'c';
-				((CK_BYTE*)pTemplate->pValue)[byteLen-3] = 'r';
-				((CK_BYTE*)pTemplate->pValue)[byteLen-2] = 't';
-			} else {
-				((CK_BYTE*)pTemplate->pValue)[byteLen-4] = 'k';
-				((CK_BYTE*)pTemplate->pValue)[byteLen-3] = 'e';
-				((CK_BYTE*)pTemplate->pValue)[byteLen-2] = 'y';
-			}
-			((CK_BYTE*)pTemplate->pValue)[byteLen-1] = '\0';
-			//printf("\n");
-			pTemplate->ulValueLen = 0;
-			break;
-		case CKA_ID:
-			AzvLog("C_GetAttributeValue type: CKA_ID");
-			pTemplate->ulValueLen = 0;
-			return CKR_OK;
-			/*
-			if (hObject == MY_CERTIFICATE_HANDLE && AzvLoadCert() == 0)
-			{
-				byteLen = AzvGetCertLen();
+	//if ((sizeof(CK_BBOOL) != inLen) && (sizeof(CK_ULONG) != inLen)) 
+	if (1) 
+	{
+		// Other length objects
+		CK_ULONG byteLen;
+		switch(pTemplate->type) {
+			case CKA_PUBLIC_EXPONENT:
+				AzvLog("C_GetAttributeValue type: CKA_PUBLIC_EXPONENT");
+				byteLen = (CK_ULONG)(32 / 8); // 4 bytes
 				if (pTemplate->pValue == NULL_PTR) {
 					AzvLog("C_GetAttributeValue pValue is NULL");
 					pTemplate->ulValueLen = byteLen;
 					return CKR_OK;
 				}
 				if (pTemplate->ulValueLen < byteLen) {
-					AzvLog("C_GetAttributeValue CKA_ID length is too small");
-					pTemplate->ulValueLen = byteLen;
+					AzvLog("C_GetAttributeValue CKA_PUBLIC_EXPONENT length is too small");
 					return CKR_BUFFER_TOO_SMALL;
 				}
-				pTemplate->ulValueLen = byteLen;
-				CK_BYTE_PTR certId = (CK_BYTE_PTR)AzvGetCertId();
-				if (certId == NULL_PTR) {
-					AzvLog("C_GetAttributeValue CKA_ID data is NULL");
+				CK_BYTE_PTR expData = (CK_BYTE_PTR)AzvGetKeyExponent();
+				if (expData == NULL_PTR) {
+					AzvLog("C_GetAttributeValue CKA_PUBLIC_EXPONENT data is NULL");
 					return CKR_FUNCTION_FAILED;
 				}
+				//memcpy(pTemplate->pValue, expData, pTemplate->ulValueLen);
 				for (int i = 0; i < (int)byteLen; i++) {
-					((CK_BYTE*)pTemplate->pValue)[i] = certId[i];
-					//printf("%02x:", ((CK_BYTE*)pTemplate->pValue)[i]);
+					((CK_BYTE*)pTemplate->pValue)[i] = expData[i];
+					printf("%02x:", ((CK_BYTE*)pTemplate->pValue)[i]);
 				}
-				//printf("\n");
-			}
-			*/
-			break;
-		case CKA_VALUE:
-			AzvLog("C_GetAttributeValue type: CKA_VALUE");
-			if (hObject == MY_CERTIFICATE_HANDLE && AzvLoadCert() == 0)
-			{
-				byteLen = AzvGetCertLen();
+				printf("\n");
+				break;
+			case CKA_MODULUS:
+				AzvLog("C_GetAttributeValue type: CKA_MODULUS");
+				byteLen = (CK_ULONG)AzvGetKeyModulusLen();
 				if (pTemplate->pValue == NULL_PTR) {
 					AzvLog("C_GetAttributeValue pValue is NULL");
 					pTemplate->ulValueLen = byteLen;
 					return CKR_OK;
 				}
 				if (pTemplate->ulValueLen < byteLen) {
-					AzvLog("C_GetAttributeValue CKA_VALUE length is too small");
+					AzvLog("C_GetAttributeValue CKA_MODULUS length is too small");
+					pTemplate->ulValueLen = byteLen;
+					return CKR_BUFFER_TOO_SMALL;
+				}
+				CK_BYTE_PTR modData = (CK_BYTE_PTR)AzvGetKeyModulus();
+				if (modData == NULL_PTR) {
+					AzvLog("C_GetAttributeValue CKA_MODULUS data is NULL");
+					return CKR_FUNCTION_FAILED;
+				}
+				//memcpy(pTemplate->pValue, modData, pTemplate->ulValueLen);
+				for (int i = 0; i < (int)byteLen; i++) {
+					((CK_BYTE*)pTemplate->pValue)[i] = modData[i];
+					printf("%02x:", ((CK_BYTE*)pTemplate->pValue)[i]);
+				}
+				printf("\n");
+				break;
+			case CKA_LABEL:
+				AzvLog("C_GetAttributeValue type: CKA_LABEL");
+				char *keyName = AzvGetKeyName();
+				byteLen = strlen(keyName);
+				if (pTemplate->pValue == NULL_PTR) {
+					AzvLog("C_GetAttributeValue pValue is NULL");
+					pTemplate->ulValueLen = byteLen;
+					return CKR_OK;
+				}
+				if (pTemplate->ulValueLen < byteLen) {
+					AzvLog("C_GetAttributeValue CKA_LABEL length is too small");
 					pTemplate->ulValueLen = byteLen;
 					return CKR_BUFFER_TOO_SMALL;
 				}
 				pTemplate->ulValueLen = byteLen;
-				CK_BYTE_PTR certData = (CK_BYTE_PTR)AzvGetCert();
-				if (certData == NULL_PTR) {
-					AzvLog("C_GetAttributeValue CKA_VALUE data is NULL");
-					return CKR_FUNCTION_FAILED;
-				}
+				//memcpy(pTemplate->pValue, modData, pTemplate->ulValueLen);
 				for (int i = 0; i < (int)byteLen; i++) {
-					((CK_BYTE*)pTemplate->pValue)[i] = certData[i];
-					//printf("%02x:", ((CK_BYTE*)pTemplate->pValue)[i]);
+					((CK_BYTE*)pTemplate->pValue)[i] = keyName[i];
+					printf("%02x:", ((CK_BYTE*)pTemplate->pValue)[i]);
 				}
-				//printf("\n");
+				/*
+				((CK_BYTE*)pTemplate->pValue)[byteLen-5] = '-';
+				if (hObject == MY_CERTIFICATE_HANDLE) {
+					((CK_BYTE*)pTemplate->pValue)[byteLen-4] = 'c';
+					((CK_BYTE*)pTemplate->pValue)[byteLen-3] = 'r';
+					((CK_BYTE*)pTemplate->pValue)[byteLen-2] = 't';
+				} else {
+					((CK_BYTE*)pTemplate->pValue)[byteLen-4] = 'k';
+					((CK_BYTE*)pTemplate->pValue)[byteLen-3] = 'e';
+					((CK_BYTE*)pTemplate->pValue)[byteLen-2] = 'y';
+				}
+				((CK_BYTE*)pTemplate->pValue)[byteLen-1] = '\0';
+				printf("\n");
+				pTemplate->ulValueLen = 0;
+				*/
+				break;
+			case CKA_ID:
+				AzvLog("C_GetAttributeValue type: CKA_ID");
+				/*
+				pTemplate->ulValueLen = 0;
+				return CKR_OK;
+				*/
+				/*
+				*/
+				if (hObject == MY_CERTIFICATE_HANDLE && AzvLoadCert() == 0)
+				{
+					byteLen = AzvGetCertLen();
+					if (pTemplate->pValue == NULL_PTR) {
+						AzvLog("C_GetAttributeValue pValue is NULL");
+						pTemplate->ulValueLen = byteLen;
+						return CKR_OK;
+					}
+					if (pTemplate->ulValueLen < byteLen) {
+						AzvLog("C_GetAttributeValue CKA_ID length is too small");
+						pTemplate->ulValueLen = byteLen;
+						return CKR_BUFFER_TOO_SMALL;
+					}
+					pTemplate->ulValueLen = byteLen;
+					CK_BYTE_PTR certId = (CK_BYTE_PTR)AzvGetCertId();
+					if (certId == NULL_PTR) {
+						AzvLog("C_GetAttributeValue CKA_ID data is NULL");
+						return CKR_FUNCTION_FAILED;
+					}
+					for (int i = 0; i < (int)byteLen; i++) {
+						((CK_BYTE*)pTemplate->pValue)[i] = certId[i];
+						printf("%02x:", ((CK_BYTE*)pTemplate->pValue)[i]);
+					}
+					printf("\n");
+				}
+				if (hObject == MY_PRIVATE_KEY_HANDLE)
+				{
+					CK_LONG index;
+					if ((index = (CK_LONG)AzvGetKeyIndex()) >= 0)
+					{
+						index += KEY_OFFSET;
+						byteLen = 4;
+						if (pTemplate->pValue == NULL_PTR) {
+							AzvLog("C_GetAttributeValue pValue is NULL");
+							pTemplate->ulValueLen = byteLen;
+							return CKR_OK;
+						}
+						if (pTemplate->ulValueLen < byteLen) {
+							AzvLog("C_GetAttributeValue CKA_ID length is too small");
+							pTemplate->ulValueLen = byteLen;
+							return CKR_BUFFER_TOO_SMALL;
+						}
+						pTemplate->ulValueLen = byteLen;
+						CK_BYTE idData[4];
+						idData[0] = (CK_BYTE)((index >> 24) & 0xFF);
+						idData[1] = (CK_BYTE)((index >> 16) & 0xFF);
+						idData[2] = (CK_BYTE)((index >> 8) & 0xFF);
+						idData[3] = (CK_BYTE)(index & 0xFF);
+						for (int i = 0; i < (int)byteLen; i++) {
+							((CK_BYTE*)pTemplate->pValue)[i] = idData[i];
+							printf("%02x:", ((CK_BYTE*)pTemplate->pValue)[i]);
+						}
+						printf("\n");
+					}
+				}
+				break;
+			case CKA_VALUE:
+				AzvLog("C_GetAttributeValue type: CKA_VALUE");
+				if (hObject == MY_CERTIFICATE_HANDLE && AzvLoadCert() == 0)
+				{
+					byteLen = AzvGetCertLen();
+					if (pTemplate->pValue == NULL_PTR) {
+						AzvLog("C_GetAttributeValue pValue is NULL");
+						pTemplate->ulValueLen = byteLen;
+						return CKR_OK;
+					}
+					if (pTemplate->ulValueLen < byteLen) {
+						AzvLog("C_GetAttributeValue CKA_VALUE length is too small");
+						pTemplate->ulValueLen = byteLen;
+						return CKR_BUFFER_TOO_SMALL;
+					}
+					pTemplate->ulValueLen = byteLen;
+					CK_BYTE_PTR certData = (CK_BYTE_PTR)AzvGetCert();
+					if (certData == NULL_PTR) {
+						AzvLog("C_GetAttributeValue CKA_VALUE data is NULL");
+						return CKR_FUNCTION_FAILED;
+					}
+					for (int i = 0; i < (int)byteLen; i++) {
+						((CK_BYTE*)pTemplate->pValue)[i] = certData[i];
+						printf("%02x:", ((CK_BYTE*)pTemplate->pValue)[i]);
+					}
+					printf("\n");
+				} else {
+					AzvLog("C_GetAttributeValue CKA_VALUE called with unknown handle");
+					return CKR_OBJECT_HANDLE_INVALID;
+				}
+				break;
+			default:
+			if ((sizeof(CK_BBOOL) == inLen) || (sizeof(CK_ULONG) == inLen)) {
+				AzvLog("C_GetAttributeValue - size change, assumed handled earlier");
+				break;
 			} else {
-				AzvLog("C_GetAttributeValue CKA_VALUE called with unknown handle");
-				return CKR_OBJECT_HANDLE_INVALID;
+				AzvLog("C_GetAttributeValue unknown type");
+				printf("%lx\n", pTemplate->type);
+				break;
 			}
-			break;
-		default:
-			AzvLog("C_GetAttributeValue unknown type");
-			printf("%lx\n", pTemplate->type);
-			break;
+	}
 	}
 	if (pTemplate->pValue == NULL_PTR) {
 		AzvLog("C_GetAttributeValue pValue is NULL");
@@ -964,33 +1020,48 @@ CK_DEFINE_FUNCTION(CK_RV, C_FindObjectsInit)(CK_SESSION_HANDLE hSession, CK_ATTR
 	if (pTemplate == NULL_PTR) {
 		return CKR_OK;
 	} else {
-		if (pTemplate->type == CKA_CLASS) {
-			if (sizeof(CK_OBJECT_CLASS) != pTemplate->ulValueLen) {
-				AzvLog("C_FindObjectsInit invalid CKA_CLASS length");
-				return CKR_ARGUMENTS_BAD;
-			}
-			CK_OBJECT_CLASS classValue = *(CK_OBJECT_CLASS *)pTemplate->pValue;
-			switch (classValue) {
-				case CKO_CERTIFICATE:
-					AzvLog("C_FindObjectsInit CKO_CERTIFICATE");
-					break;
-				case CKO_SECRET_KEY:
-					AzvLog("C_FindObjectsInit CKO_SECRET_KEY");
-					break;
-				case CKO_PUBLIC_KEY:
-					AzvLog("C_FindObjectsInit CKO_PUBLIC_KEY");
-					break;
-				case CKO_PRIVATE_KEY:
-					AzvLog("C_FindObjectsInit CKO_PRIVATE_KEY");
-					break;
-				default:	
-					AzvLog("C_FindObjectsInit unknown CKA_CLASS value");
+		CK_ULONG ulIndex;
+		CK_ATTRIBUTE xAttribute;
+
+		for( ulIndex = 0; ulIndex < ulCount; ulIndex++ )
+        {
+            xAttribute = pTemplate[ ulIndex ];
+
+			if (xAttribute.type == CKA_CLASS) {
+				if (sizeof(CK_OBJECT_CLASS) != xAttribute.ulValueLen) {
+					AzvLog("C_FindObjectsInit invalid CKA_CLASS length");
 					return CKR_ARGUMENTS_BAD;
+				}
+				CK_OBJECT_CLASS classValue = *(CK_OBJECT_CLASS *)xAttribute.pValue;
+				switch (classValue) {
+					case CKO_CERTIFICATE:
+						AzvLog("C_FindObjectsInit CK_OBJECT_CLASS=CKO_CERTIFICATE");
+						break;
+					case CKO_SECRET_KEY:
+						AzvLog("C_FindObjectsInit CK_OBJECT_CLASS=CKO_SECRET_KEY");
+						break;
+					case CKO_PUBLIC_KEY:
+						AzvLog("C_FindObjectsInit CK_OBJECT_CLASS=CKO_PUBLIC_KEY");
+						break;
+					case CKO_PRIVATE_KEY:
+						AzvLog("C_FindObjectsInit CK_OBJECT_CLASS=CKO_PRIVATE_KEY");
+						break;
+					default:	
+						AzvLog("C_FindObjectsInit unknown CK_OBJECT_CLASS value");
+						return CKR_ARGUMENTS_BAD;
+				}
+				gSessionSearchClass = classValue;
 			}
-			gSessionSearchClass = classValue;
+			if (xAttribute.type == CKA_LABEL) {
+				char l[] = "C_FindObjectsInit CKA_LABEL='";
+				if ((sizeof(l) + xAttribute.ulValueLen + 1) < sizeof(cntString)) {
+					snprintf(cntString, sizeof(l) + xAttribute.ulValueLen+1, "%s%s'", l, (char *)xAttribute.pValue);
+				}
+				AzvLog(cntString);
+			}
+			snprintf(cntString, sizeof(cntString), "C_FindObjectsInit template type: 0x%lx, ulValueLen: %lu", xAttribute.type, xAttribute.ulValueLen);
+			AzvLog(cntString);
 		}
-		snprintf(cntString, sizeof(cntString), "C_FindObjectsInit template type: 0x%lx, ulValueLen: %lu", pTemplate->type, pTemplate->ulValueLen);
-		AzvLog(cntString);
 	}
 
 	return CKR_OK;
@@ -1022,27 +1093,33 @@ CK_DEFINE_FUNCTION(CK_RV, C_FindObjects)(CK_SESSION_HANDLE hSession, CK_OBJECT_H
 	if (gSessionSearchCount == 0) {
 		switch (gSessionSearchClass) {
 			case CKO_CERTIFICATE:
-				AzvLog("C_FindObjectsInit CKO_CERTIFICATE");
+				AzvLog("C_FindObjects CKO_CERTIFICATE");
 				if (AzvLoadCert() != 0) {
-					AzvLog("C_FindObjectsInit CKO_CERTIFICATE failed to load certificate");
+					AzvLog("C_FindObjects CKO_CERTIFICATE failed to load certificate");
 					return CKR_OK;
 				}
 				*phObject = MY_CERTIFICATE_HANDLE;
 				break;
 			case CKO_PUBLIC_KEY:
-				AzvLog("C_FindObjectsInit CKO_PUBLIC_KEY");
+				AzvLog("C_FindObjects CKO_PUBLIC_KEY");
 				*phObject = MY_PUBLIC_KEY_HANDLE;
 				break;
 			case CKO_PRIVATE_KEY:
-				AzvLog("C_FindObjectsInit CKO_PRIVATE_KEY");
+				AzvLog("C_FindObjects CKO_PRIVATE_KEY");
 				*phObject = MY_PRIVATE_KEY_HANDLE;
 				break;
 			default:	
-				AzvLog("C_FindObjectsInit unknown CKA_CLASS value");
+				AzvLog("C_FindObjects unknown CKA_CLASS value");
 				return CKR_OK;
 		}
 		*pulObjectCount = 1;
 		gSessionSearchCount = 1;
+	/*} else if (gSessionSearchCount == 1) {
+		if (gSessionSearchClass == CKO_PRIVATE_KEY) {
+			*phObject = MY_CERTIFICATE_HANDLE;
+			*pulObjectCount = 1;
+			gSessionSearchCount = 2;
+		} */
 	}
 
 	return CKR_OK;
@@ -1225,19 +1302,25 @@ CK_DEFINE_FUNCTION(CK_RV, C_SignInit)(CK_SESSION_HANDLE hSession, CK_MECHANISM_P
 		return CKR_ARGUMENTS_BAD;
 	}
 
+	gSignLength = 0;
 	switch(pMechanism->mechanism) {
 		case CKM_RSA_PKCS:
 			AzvLog("C_SignInit CKM_RSA_PKCS");
+			gSignLength = 512;
 			break;
 		case CKM_SHA256_RSA_PKCS:
 			AzvLog("C_SignInit CKM_SHA256_RSA_PKCS");
+			gSignLength = 512;
+			break;
+		case CKM_SHA512_RSA_PKCS:
+			AzvLog("C_SignInit CKM_SHA512_RSA_PKCS");
+			gSignLength = 512;
 			break;
 		default:
 			AzvLog("C_SignInit called with unsupported mechanism");
 			return CKR_MECHANISM_INVALID;
 	}
 
-	gSignLength = 0;
 	gSignMechanism = pMechanism->mechanism;
 
 	return CKR_OK;
@@ -1268,7 +1351,7 @@ CK_DEFINE_FUNCTION(CK_RV, C_Sign)(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
 
 	if (pSignature == NULL_PTR || *pulSignatureLen == 0) {
 		AzvLog("C_Sign called with NULL pSignature or pulSignatureLen=0");
-		//*pulSignatureLen = 512;
+		*pulSignatureLen = gSignLength;
 		return CKR_OK;
 	}
 
@@ -1277,7 +1360,7 @@ CK_DEFINE_FUNCTION(CK_RV, C_Sign)(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
 	}
 	printf("\n");
 
-	if (*pulSignatureLen == 512) {
+	if (*pulSignatureLen == gSignLength) {
 
 		CK_ULONG sigLength = 0;
 		CK_BYTE_PTR sigData;
@@ -1333,6 +1416,7 @@ CK_DEFINE_FUNCTION(CK_RV, C_SignFinal)(CK_SESSION_HANDLE hSession, CK_BYTE_PTR p
 	UNUSED(pulSignatureLen);
 
 	AzvLog("C_SignFinal called");
+	gSignLength = 0;
 
 	return CKR_FUNCTION_NOT_SUPPORTED;
 }
